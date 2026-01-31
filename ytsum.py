@@ -95,6 +95,132 @@ def split_audio(audio_path: Path, chunk_duration: int = 600, verbose: bool = Fal
     return chunks
 
 
+def is_channel_url(url: str) -> bool:
+    """Check if URL is a YouTube channel URL.
+
+    Args:
+        url: URL to check
+
+    Returns:
+        True if URL is a channel URL
+    """
+    channel_patterns = [
+        r"youtube\.com/@[\w-]+",
+        r"youtube\.com/channel/[\w-]+",
+        r"youtube\.com/c/[\w-]+",
+        r"youtube\.com/user/[\w-]+",
+    ]
+    return any(re.search(pattern, url) for pattern in channel_patterns)
+
+
+def get_channel_info(url: str, verbose: bool = False) -> dict:
+    """Get channel info from YouTube channel URL.
+
+    Args:
+        url: YouTube channel URL
+        verbose: Print detailed output
+
+    Returns:
+        Dictionary containing channel info
+    """
+    cmd = [
+        "yt-dlp",
+        "--flat-playlist",
+        "--dump-json",
+        "--playlist-end", "1",
+        url,
+    ]
+
+    if verbose:
+        print("Fetching channel info...", file=sys.stderr)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"yt-dlp channel info failed: {result.stderr}")
+
+    # 最初の動画情報からチャンネル名を取得
+    first_line = result.stdout.strip().split("\n")[0]
+    data = json.loads(first_line)
+
+    # チャンネル名を取得（URLから抽出も試みる）
+    channel_name = data.get("channel") or data.get("uploader")
+    if not channel_name:
+        # URLから@以降を抽出
+        match = re.search(r"@([\w-]+)", url)
+        if match:
+            channel_name = match.group(1)
+        else:
+            channel_name = "unknown_channel"
+
+    return {
+        "channel_name": channel_name,
+        "channel_url": url,
+    }
+
+
+def get_channel_videos(url: str, limit: int, verbose: bool = False) -> list[dict]:
+    """Get video list from YouTube channel.
+
+    Args:
+        url: YouTube channel URL
+        limit: Maximum number of videos to fetch
+        verbose: Print detailed output
+
+    Returns:
+        List of video info dictionaries
+    """
+    cmd = [
+        "yt-dlp",
+        "--flat-playlist",
+        "--dump-json",
+        "--playlist-end", str(limit),
+        url,
+    ]
+
+    if verbose:
+        print(f"Fetching up to {limit} videos from channel...", file=sys.stderr)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"yt-dlp channel fetch failed: {result.stderr}")
+
+    videos = []
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        data = json.loads(line)
+        videos.append({
+            "video_id": data.get("id"),
+            "title": data.get("title"),
+            "url": data.get("url") or f"https://www.youtube.com/watch?v={data.get('id')}",
+            "duration": data.get("duration"),
+        })
+
+    return videos
+
+
+def get_processed_video_ids(channel_dir: Path) -> set[str]:
+    """Get set of already processed video IDs from channel directory.
+
+    Args:
+        channel_dir: Path to channel log directory
+
+    Returns:
+        Set of processed video IDs
+    """
+    if not channel_dir.exists():
+        return set()
+
+    processed = set()
+    for subdir in channel_dir.iterdir():
+        if subdir.is_dir():
+            # ディレクトリ名からvideo_idを抽出（video_id_タイトル形式）
+            video_id = subdir.name.split("_")[0]
+            if video_id:
+                processed.add(video_id)
+    return processed
+
+
 def get_video_metadata(url: str, verbose: bool = False) -> dict:
     """Get video metadata from YouTube URL using yt-dlp.
 
@@ -385,6 +511,146 @@ Markdown形式で出力してください。
     return result.stdout
 
 
+def process_single_video(args, output_dir: Path | None = None) -> str | None:
+    """Process a single YouTube video.
+
+    Args:
+        args: Parsed command line arguments
+        output_dir: Optional output directory override
+
+    Returns:
+        Summary text or None if failed
+    """
+    start_time = datetime.now()
+
+    # Step 1: Get video metadata
+    print("Fetching video metadata...", file=sys.stderr)
+    metadata = get_video_metadata(args.url, args.verbose)
+    if args.verbose:
+        print(f"Title: {metadata['title']}", file=sys.stderr)
+        print(f"Channel: {metadata['channel']}", file=sys.stderr)
+
+    # Create log directory with timestamp and title
+    if output_dir is None:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        sanitized_title = sanitize_filename(metadata["title"])
+        output_dir = args.log_dir / f"{timestamp}_{sanitized_title}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create temp directory for audio processing
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        # Step 2: Download audio
+        print("Downloading audio...", file=sys.stderr)
+        audio_path = download_audio(args.url, temp_path, args.verbose)
+        if args.verbose:
+            print(f"Downloaded: {audio_path}", file=sys.stderr)
+
+        # Step 3: Transcribe
+        print("Transcribing audio...", file=sys.stderr)
+        transcript = transcribe_audio(
+            audio_path,
+            mode=args.whisper_mode,
+            model=args.whisper_model,
+            language=args.language,
+            verbose=args.verbose,
+        )
+        if args.verbose:
+            print(f"Transcript length: {len(transcript)} chars", file=sys.stderr)
+
+        # Save transcript
+        transcript_path = output_dir / "transcript.txt"
+        transcript_path.write_text(transcript)
+        print(f"Transcript saved to: {transcript_path}", file=sys.stderr)
+
+        # Step 4: Summarize
+        print("Summarizing...", file=sys.stderr)
+        summary = summarize_text(transcript, args.format, args.verbose)
+
+        # Save summary with metadata header
+        summary_path = output_dir / "summary.txt"
+        elapsed_time = datetime.now() - start_time
+        elapsed_seconds = int(elapsed_time.total_seconds())
+        elapsed_str = f"{elapsed_seconds // 60}分{elapsed_seconds % 60}秒"
+        summary_with_metadata = f"""タイトル: {metadata['title']}
+チャンネル: {metadata['channel']}
+公開日: {metadata['upload_date']}
+URL: {metadata['url']}
+取得日: {start_time.strftime('%Y-%m-%d %H:%M:%S')}
+処理時間: {elapsed_str}
+
+---
+
+{summary}"""
+        summary_path.write_text(summary_with_metadata)
+        print(f"Summary saved to: {summary_path}", file=sys.stderr)
+
+        # Also print summary to stdout
+        print(summary)
+
+        return summary
+
+
+def process_channel(args) -> None:
+    """Process videos from a YouTube channel.
+
+    Args:
+        args: Parsed command line arguments
+    """
+    # チャンネル情報を取得
+    channel_info = get_channel_info(args.url, args.verbose)
+    channel_name = sanitize_filename(channel_info["channel_name"])
+    channel_dir = args.log_dir / "channel" / channel_name
+
+    print(f"Channel: {channel_info['channel_name']}", file=sys.stderr)
+    print(f"Log directory: {channel_dir}", file=sys.stderr)
+
+    # 処理済み動画IDを取得
+    processed_ids = get_processed_video_ids(channel_dir)
+    if processed_ids:
+        print(f"Already processed: {len(processed_ids)} videos", file=sys.stderr)
+
+    # 動画一覧を取得
+    videos = get_channel_videos(args.url, args.limit, args.verbose)
+    print(f"Found {len(videos)} videos", file=sys.stderr)
+
+    # 処理対象をフィルタリング
+    to_process = [v for v in videos if v["video_id"] not in processed_ids]
+    skipped = len(videos) - len(to_process)
+    if skipped > 0:
+        print(f"Skipping {skipped} already processed videos", file=sys.stderr)
+
+    if not to_process:
+        print("No new videos to process", file=sys.stderr)
+        return
+
+    print(f"Processing {len(to_process)} videos...", file=sys.stderr)
+    print("-" * 50, file=sys.stderr)
+
+    # 各動画を処理
+    for i, video in enumerate(to_process, 1):
+        video_id = video["video_id"]
+        title = video["title"] or "unknown"
+        sanitized_title = sanitize_filename(title, max_length=80)
+        output_dir = channel_dir / f"{video_id}_{sanitized_title}"
+
+        print(f"\n[{i}/{len(to_process)}] {title}", file=sys.stderr)
+
+        # argsをコピーしてURLを上書き
+        video_args = argparse.Namespace(**vars(args))
+        video_args.url = video["url"]
+
+        try:
+            process_single_video(video_args, output_dir)
+        except Exception as e:
+            print(f"Error processing {video_id}: {e}", file=sys.stderr)
+            continue
+
+    print("\n" + "=" * 50, file=sys.stderr)
+    print(f"Completed: {len(to_process)} videos processed", file=sys.stderr)
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -392,14 +658,23 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # 単一動画の要約
   %(prog)s "https://youtu.be/VIDEO_ID"
   %(prog)s "https://youtu.be/VIDEO_ID" --whisper-mode faster
-  %(prog)s "https://youtu.be/VIDEO_ID" --whisper-mode faster --whisper-model large-v3
-  %(prog)s "https://youtu.be/VIDEO_ID" --format markdown
+
+  # チャンネルから最新N件を要約
+  %(prog)s "https://www.youtube.com/@CHANNEL" --limit 5
+  %(prog)s "https://www.youtube.com/@CHANNEL" --limit 10 --whisper-mode faster
 """,
     )
 
-    parser.add_argument("url", help="YouTube video URL")
+    parser.add_argument("url", help="YouTube video or channel URL")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="Number of videos to process for channel URLs (default: 5)",
+    )
     parser.add_argument(
         "--whisper-mode",
         choices=["api", "faster", "local"],
@@ -445,72 +720,11 @@ Examples:
             args.whisper_model = "base"
 
     try:
-        start_time = datetime.now()
-
-        # Step 1: Get video metadata
-        print("Fetching video metadata...", file=sys.stderr)
-        metadata = get_video_metadata(args.url, args.verbose)
-        if args.verbose:
-            print(f"Title: {metadata['title']}", file=sys.stderr)
-            print(f"Channel: {metadata['channel']}", file=sys.stderr)
-
-        # Create log directory with timestamp and title
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        sanitized_title = sanitize_filename(metadata["title"])
-        output_dir = args.log_dir / f"{timestamp}_{sanitized_title}"
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Create temp directory for audio processing
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-
-            # Step 2: Download audio
-            print("Downloading audio...", file=sys.stderr)
-            audio_path = download_audio(args.url, temp_path, args.verbose)
-            if args.verbose:
-                print(f"Downloaded: {audio_path}", file=sys.stderr)
-
-            # Step 3: Transcribe
-            print("Transcribing audio...", file=sys.stderr)
-            transcript = transcribe_audio(
-                audio_path,
-                mode=args.whisper_mode,
-                model=args.whisper_model,
-                language=args.language,
-                verbose=args.verbose,
-            )
-            if args.verbose:
-                print(f"Transcript length: {len(transcript)} chars", file=sys.stderr)
-
-            # Save transcript
-            transcript_path = output_dir / "transcript.txt"
-            transcript_path.write_text(transcript)
-            print(f"Transcript saved to: {transcript_path}", file=sys.stderr)
-
-            # Step 4: Summarize
-            print("Summarizing...", file=sys.stderr)
-            summary = summarize_text(transcript, args.format, args.verbose)
-
-            # Save summary with metadata header
-            summary_path = output_dir / "summary.txt"
-            elapsed_time = datetime.now() - start_time
-            elapsed_seconds = int(elapsed_time.total_seconds())
-            elapsed_str = f"{elapsed_seconds // 60}分{elapsed_seconds % 60}秒"
-            summary_with_metadata = f"""タイトル: {metadata['title']}
-チャンネル: {metadata['channel']}
-公開日: {metadata['upload_date']}
-URL: {metadata['url']}
-取得日: {start_time.strftime('%Y-%m-%d %H:%M:%S')}
-処理時間: {elapsed_str}
-
----
-
-{summary}"""
-            summary_path.write_text(summary_with_metadata)
-            print(f"Summary saved to: {summary_path}", file=sys.stderr)
-
-            # Also print summary to stdout
-            print(summary)
+        # チャンネルURLの場合
+        if is_channel_url(args.url):
+            process_channel(args)
+        else:
+            process_single_video(args)
 
     except KeyboardInterrupt:
         print("\nInterrupted by user", file=sys.stderr)
