@@ -445,6 +445,8 @@ Examples:
             args.whisper_model = "base"
 
     try:
+        start_time = datetime.now()
+
         # Step 1: Get video metadata
         print("Fetching video metadata...", file=sys.stderr)
         metadata = get_video_metadata(args.url, args.verbose)
@@ -491,10 +493,15 @@ Examples:
 
             # Save summary with metadata header
             summary_path = output_dir / "summary.txt"
+            elapsed_time = datetime.now() - start_time
+            elapsed_seconds = int(elapsed_time.total_seconds())
+            elapsed_str = f"{elapsed_seconds // 60}分{elapsed_seconds % 60}秒"
             summary_with_metadata = f"""タイトル: {metadata['title']}
 チャンネル: {metadata['channel']}
 公開日: {metadata['upload_date']}
 URL: {metadata['url']}
+取得日: {start_time.strftime('%Y-%m-%d %H:%M:%S')}
+処理時間: {elapsed_str}
 
 ---
 
