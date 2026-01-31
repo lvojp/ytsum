@@ -4,6 +4,7 @@
 import argparse
 from datetime import datetime
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -92,6 +93,66 @@ def split_audio(audio_path: Path, chunk_duration: int = 600, verbose: bool = Fal
         start_time += chunk_duration
 
     return chunks
+
+
+def get_video_metadata(url: str, verbose: bool = False) -> dict:
+    """Get video metadata from YouTube URL using yt-dlp.
+
+    Args:
+        url: YouTube video URL
+        verbose: Print detailed output
+
+    Returns:
+        Dictionary containing video metadata
+    """
+    cmd = [
+        "yt-dlp",
+        "--dump-json",
+        "--no-download",
+        url,
+    ]
+
+    if verbose:
+        print(f"Fetching metadata...", file=sys.stderr)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"yt-dlp metadata fetch failed: {result.stderr}")
+
+    data = json.loads(result.stdout)
+
+    return {
+        "title": data.get("title", "Unknown"),
+        "channel": data.get("channel", data.get("uploader", "Unknown")),
+        "upload_date": data.get("upload_date", "Unknown"),  # YYYYMMDD形式
+        "duration": data.get("duration", 0),
+        "view_count": data.get("view_count", 0),
+        "url": url,
+        "video_id": data.get("id", "Unknown"),
+    }
+
+
+def sanitize_filename(name: str, max_length: int = 100) -> str:
+    """Sanitize string for use in filename.
+
+    Args:
+        name: Original string
+        max_length: Maximum length of the result
+
+    Returns:
+        Sanitized string safe for filenames
+    """
+    # ファイル名に使えない文字を置換
+    sanitized = re.sub(r'[<>:"/\\|?*]', '_', name)
+    # 連続するアンダースコアを1つに
+    sanitized = re.sub(r'_+', '_', sanitized)
+    # 前後の空白とアンダースコアを除去
+    sanitized = sanitized.strip().strip('_')
+    # 長さ制限
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length].rstrip('_')
+    return sanitized
 
 
 def download_audio(url: str, output_dir: Path, verbose: bool = False) -> Path:
@@ -384,22 +445,30 @@ Examples:
             args.whisper_model = "base"
 
     try:
-        # Create log directory with timestamp
-        timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-        output_dir = args.log_dir / timestamp
+        # Step 1: Get video metadata
+        print("Fetching video metadata...", file=sys.stderr)
+        metadata = get_video_metadata(args.url, args.verbose)
+        if args.verbose:
+            print(f"Title: {metadata['title']}", file=sys.stderr)
+            print(f"Channel: {metadata['channel']}", file=sys.stderr)
+
+        # Create log directory with timestamp and title
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        sanitized_title = sanitize_filename(metadata["title"])
+        output_dir = args.log_dir / f"{timestamp}_{sanitized_title}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Create temp directory for audio processing
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
 
-            # Step 1: Download audio
+            # Step 2: Download audio
             print("Downloading audio...", file=sys.stderr)
             audio_path = download_audio(args.url, temp_path, args.verbose)
             if args.verbose:
                 print(f"Downloaded: {audio_path}", file=sys.stderr)
 
-            # Step 2: Transcribe
+            # Step 3: Transcribe
             print("Transcribing audio...", file=sys.stderr)
             transcript = transcribe_audio(
                 audio_path,
@@ -416,13 +485,21 @@ Examples:
             transcript_path.write_text(transcript)
             print(f"Transcript saved to: {transcript_path}", file=sys.stderr)
 
-            # Step 3: Summarize
+            # Step 4: Summarize
             print("Summarizing...", file=sys.stderr)
             summary = summarize_text(transcript, args.format, args.verbose)
 
-            # Save summary
+            # Save summary with metadata header
             summary_path = output_dir / "summary.txt"
-            summary_path.write_text(summary)
+            summary_with_metadata = f"""タイトル: {metadata['title']}
+チャンネル: {metadata['channel']}
+公開日: {metadata['upload_date']}
+URL: {metadata['url']}
+
+---
+
+{summary}"""
+            summary_path.write_text(summary_with_metadata)
             print(f"Summary saved to: {summary_path}", file=sys.stderr)
 
             # Also print summary to stdout
