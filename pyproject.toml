@@ -1,0 +1,13 @@
+[project]
+name = "ytsum"
+version = "0.1.0"
+description = "YouTube video summarization tool"
+requires-python = ">=3.12"
+dependencies = [
+    "faster-whisper>=1.2.1",
+    "openai>=2.16.0",
+    "openai-whisper>=20250625",
+]
+
+[project.scripts]
+ytsum = "ytsum:main"
