@@ -259,7 +259,7 @@ def get_video_metadata(url: str, verbose: bool = False) -> dict:
     }
 
 
-def sanitize_filename(name: str, max_length: int = 100) -> str:
+def sanitize_filename(name: str, max_length: int = 50) -> str:
     """Sanitize string for use in filename.
 
     Args:
@@ -292,7 +292,7 @@ def download_audio(url: str, output_dir: Path, verbose: bool = False) -> Path:
     Returns:
         Path to the downloaded audio file
     """
-    output_template = str(output_dir / "%(title)s.%(ext)s")
+    output_template = str(output_dir / "%(id)s.%(ext)s")
     cmd = [
         "yt-dlp",
         "-x",  # Extract audio
@@ -569,7 +569,7 @@ def process_single_video(args, output_dir: Path | None = None) -> str | None:
         summary = summarize_text(transcript, args.format, args.verbose)
 
         # Save summary with metadata header
-        summary_path = output_dir / "summary.txt"
+        summary_path = output_dir / "summary.md"
         elapsed_time = datetime.now() - start_time
         elapsed_seconds = int(elapsed_time.total_seconds())
         elapsed_str = f"{elapsed_seconds // 60}分{elapsed_seconds % 60}秒"
