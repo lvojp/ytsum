@@ -577,9 +577,28 @@ def process_single_video(args, output_dir: Path | None = None) -> str | None:
         print(f"Transcript saved to: {transcript_path}", file=sys.stderr)
 
         if args.no_summary:
-            # --no-summary: JSON形式で出力（メタデータは既に取得済み）
+            # metadata.jsonをlog/に保存（transcript全文は含めない）
+            metadata_for_save = {
+                "title": metadata["title"],
+                "channel": metadata["channel"],
+                "upload_date": metadata["upload_date"],
+                "duration": metadata["duration"],
+                "url": metadata["url"],
+                "video_id": metadata["video_id"],
+            }
+            metadata_path = output_dir / "metadata.json"
+            metadata_path.write_text(
+                json.dumps(metadata_for_save, ensure_ascii=False, indent=2)
+            )
+            print(f"Metadata saved to: {metadata_path}", file=sys.stderr)
+
+            # stdoutには軽量JSONのみ出力（transcript全文を含めない）
             output = json.dumps(
-                {"title": metadata["title"], "transcript": transcript},
+                {
+                    "log_dir": str(output_dir),
+                    "title": metadata["title"],
+                    "video_id": metadata["video_id"],
+                },
                 ensure_ascii=False,
             )
             print(output)

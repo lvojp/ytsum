@@ -1,6 +1,7 @@
 """ytsum.pyのユニットテスト。"""
 
 import json
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -52,7 +53,7 @@ class TestNoSummaryFlag:
     @patch("ytsum.get_video_metadata", return_value=MOCK_METADATA)
     @patch("ytsum.transcribe_audio", return_value="これはテストの文字起こしです。")
     @patch("ytsum.download_audio")
-    def test_no_summary時にJSON出力(self, mock_download, mock_transcribe, mock_metadata, tmp_path, capsys):
+    def test_no_summary時にJSON出力にtranscriptを含まない(self, mock_download, mock_transcribe, mock_metadata, tmp_path, capsys):
         mock_download.return_value = tmp_path / "audio.mp3"
         (tmp_path / "audio.mp3").touch()
 
@@ -62,7 +63,40 @@ class TestNoSummaryFlag:
         captured = capsys.readouterr()
         output = json.loads(captured.out)
         assert output["title"] == "テスト動画"
-        assert output["transcript"] == "これはテストの文字起こしです。"
+        assert output["video_id"] == "test123"
+        assert "log_dir" in output
+        # transcript全文がstdoutに含まれないことを確認
+        assert "transcript" not in output
+        assert "これはテストの文字起こしです。" not in captured.out
+
+    @patch("ytsum.get_video_metadata", return_value=MOCK_METADATA)
+    @patch("ytsum.transcribe_audio", return_value="これはテストの文字起こしです。")
+    @patch("ytsum.download_audio")
+    def test_no_summary時にmetadata_json保存(self, mock_download, mock_transcribe, mock_metadata, tmp_path, capsys):
+        mock_download.return_value = tmp_path / "audio.mp3"
+        (tmp_path / "audio.mp3").touch()
+
+        with patch("sys.argv", ["ytsum", "https://youtu.be/test123", "--no-summary", "--log-dir", str(tmp_path / "log")]):
+            main()
+
+        # stdoutからlog_dirを取得
+        captured = capsys.readouterr()
+        output = json.loads(captured.out)
+        log_dir = Path(output["log_dir"])
+
+        # metadata.jsonが保存されていることを確認
+        metadata_path = log_dir / "metadata.json"
+        assert metadata_path.exists()
+
+        metadata = json.loads(metadata_path.read_text())
+        assert metadata["title"] == "テスト動画"
+        assert metadata["channel"] == "テストチャンネル"
+        assert metadata["upload_date"] == "20260214"
+        assert metadata["duration"] == 120
+        assert metadata["url"] == "https://youtu.be/test123"
+        assert metadata["video_id"] == "test123"
+        # transcript全文がmetadata.jsonに含まれないことを確認
+        assert "transcript" not in metadata
 
     @patch("ytsum.get_video_metadata", return_value=MOCK_METADATA)
     @patch("ytsum.transcribe_audio", return_value="テスト")
