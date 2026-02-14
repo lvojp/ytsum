@@ -14,6 +14,18 @@ import openai
 from faster_whisper import WhisperModel
 
 
+def get_video_title(url: str) -> str:
+    """yt-dlpで動画タイトルを取得する。"""
+    result = subprocess.run(
+        ["yt-dlp", "--get-title", url],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"動画タイトルの取得に失敗: {result.stderr}")
+    return result.stdout.strip()
+
+
 def get_openai_api_key() -> str:
     """Get OpenAI API key from 1Password."""
     result = subprocess.run(
@@ -564,6 +576,15 @@ def process_single_video(args, output_dir: Path | None = None) -> str | None:
         transcript_path.write_text(transcript)
         print(f"Transcript saved to: {transcript_path}", file=sys.stderr)
 
+        if args.no_summary:
+            # --no-summary: JSON形式で出力（メタデータは既に取得済み）
+            output = json.dumps(
+                {"title": metadata["title"], "transcript": transcript},
+                ensure_ascii=False,
+            )
+            print(output)
+            return None
+
         # Step 4: Summarize
         print("Summarizing...", file=sys.stderr)
         summary = summarize_text(transcript, args.format, args.verbose)
@@ -695,6 +716,11 @@ Examples:
         choices=["text", "markdown"],
         default="text",
         help="Output format (default: text)",
+    )
+    parser.add_argument(
+        "--no-summary",
+        action="store_true",
+        help="文字起こしのみ実行し、要約をスキップ。JSON形式で出力",
     )
     parser.add_argument(
         "--log-dir",
