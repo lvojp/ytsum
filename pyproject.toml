@@ -4,8 +4,17 @@ version = "0.1.0"
 description = "YouTube video summarization tool"
 requires-python = ">=3.12"
 dependencies = [
-    "faster-whisper>=1.2.1",
     "openai>=2.16.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "faster-whisper>=1.2.1",
+]
+mlx = [
+    "mlx-whisper>=0.4.0",
+]
+local = [
     "openai-whisper>=20250625",
 ]
 

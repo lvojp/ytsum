@@ -11,7 +11,6 @@ import tempfile
 from pathlib import Path
 
 import openai
-from faster_whisper import WhisperModel
 
 
 def get_video_title(url: str) -> str:
@@ -371,6 +370,8 @@ def transcribe_audio(
         return "\n".join(transcripts)
     elif mode == "faster":
         return _transcribe_faster(audio_path, model, language, verbose)
+    elif mode == "mlx":
+        return _transcribe_mlx(audio_path, model, language, verbose)
     else:
         return _transcribe_local(audio_path, model, language, verbose)
 
@@ -406,6 +407,14 @@ def _transcribe_faster(
     verbose: bool,
 ) -> str:
     """Transcribe using faster-whisper."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        raise RuntimeError(
+            "faster-whisper is not installed. "
+            "Install with: uv pip install faster-whisper"
+        )
+
     if verbose:
         print(f"Transcribing with faster-whisper (model: {model})", file=sys.stderr)
 
@@ -437,6 +446,49 @@ def _transcribe_faster(
         texts.append(segment.text.strip())
 
     return "\n".join(texts)
+
+
+def _transcribe_mlx(
+    audio_path: Path,
+    model: str,
+    language: str | None,
+    verbose: bool,
+) -> str:
+    """Transcribe using mlx-whisper (Apple Silicon最適化)."""
+    try:
+        import mlx_whisper
+    except ImportError:
+        raise RuntimeError(
+            "mlx-whisper is not installed. "
+            "Install with: uv pip install 'ytsum[mlx]'"
+        )
+
+    # モデル名をHuggingFaceリポジトリ名にマッピング
+    model_map = {
+        "large-v3": "mlx-community/whisper-large-v3-mlx",
+        "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+        "large-v2": "mlx-community/whisper-large-v2-mlx",
+        "medium": "mlx-community/whisper-medium-mlx",
+        "small": "mlx-community/whisper-small-mlx",
+        "base": "mlx-community/whisper-base-mlx",
+        "tiny": "mlx-community/whisper-tiny-mlx",
+    }
+    repo = model_map.get(model, model)
+
+    if verbose:
+        print(f"Transcribing with mlx-whisper (model: {repo})", file=sys.stderr)
+        print(f"Loading model...", file=sys.stderr)
+
+    kwargs = {"path_or_hf_repo": repo}
+    if language:
+        kwargs["language"] = language
+
+    result = mlx_whisper.transcribe(str(audio_path), **kwargs)
+
+    if verbose and "language" in result:
+        print(f"Detected language: {result['language']}", file=sys.stderr)
+
+    return result["text"]
 
 
 def _transcribe_local(
@@ -717,9 +769,9 @@ Examples:
     )
     parser.add_argument(
         "--whisper-mode",
-        choices=["api", "faster", "local"],
+        choices=["api", "faster", "mlx", "local"],
         default="api",
-        help="Whisper mode: api (OpenAI), faster (faster-whisper), local (whisper CLI)",
+        help="Whisper mode: api (OpenAI), faster (faster-whisper), mlx (Apple Silicon), local (whisper CLI)",
     )
     parser.add_argument(
         "--whisper-model",
@@ -759,7 +811,7 @@ Examples:
     if args.whisper_model is None:
         if args.whisper_mode == "api":
             args.whisper_model = "whisper-1"
-        elif args.whisper_mode == "faster":
+        elif args.whisper_mode in ("faster", "mlx"):
             args.whisper_model = "large-v3"
         else:  # local
             args.whisper_model = "base"
